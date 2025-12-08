@@ -1,6 +1,7 @@
 # Circle Loss for TBPS-mSigLIP
 
 Circle Loss's reference : https://arxiv.org/abs/2002.10857
+
 Required at least: NVIDIA RTX 3060 12GB-VRAM
 
 ## Setup
