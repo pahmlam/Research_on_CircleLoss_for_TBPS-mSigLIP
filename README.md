@@ -2,7 +2,7 @@
 
 Circle Loss's reference : https://arxiv.org/abs/2002.10857
 
-Required at least: NVIDIA RTX 3060 12GB-VRAM
+7th Gen Intel(R) Core(TM) i5-7600K GeForce RTX 3060 12GB- 24GB RAM.
 
 ## Setup
 
