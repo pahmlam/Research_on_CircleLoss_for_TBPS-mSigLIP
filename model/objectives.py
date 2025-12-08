@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from typing import Tuple
 
 def compute_sdm(
     image_fetures,
@@ -61,7 +61,6 @@ def compute_sdm(
         if weights:
             t2i_loss = weights * t2i_loss
         loss = torch.mean(torch.sum(t2i_loss, dim=1))
-
     else:
         i2t_cosine_theta = t2i_cosine_theta.t()
         image_proj_text = logit_scale * i2t_cosine_theta + logit_bias
@@ -103,6 +102,7 @@ def compute_mlm(
     """
     # ce = nn.CrossEntropyLoss(ignore_index=ignore_index)
     # return ce(scores, labels)
+
     loss = F.cross_entropy(scores, labels, ignore_index=ignore_index, reduction="mean")
     return loss
 
@@ -148,7 +148,6 @@ def compute_id(
 ):
     """
     Instance loss proposed at http://arxiv.org/abs/1711.05535
-
     Args:
         image_logits: image_features aften passing through a classifier
         text_logits: text_features aften passing through a classifier
@@ -422,4 +421,79 @@ def compute_simclr(
 
     loss = (loss_a + loss_b) / 2
 
+    return loss
+
+# --- NEW PAIRWISE CIRCLE LOSS ---
+
+class CircleLoss(nn.Module):
+    """
+    Circle Loss implementation (Pairwise version).
+    Formula: log(1 + sum_exp(pos) * sum_exp(neg))
+    """
+    def __init__(self, m: float, gamma: float):
+        super(CircleLoss, self).__init__()
+        self.m = m
+        self.gamma = gamma
+        self.soft_plus = nn.Softplus()
+
+    def forward(self, features: torch.Tensor, pids: torch.Tensor):
+        """
+        Args:
+            features: (Batch_size, Embed_dim)
+            pids: (Batch_size)
+        """
+        # Normalize features for Cosine Similarity
+        features = F.normalize(features, p=2, dim=1)
+        
+        # Calculate Cosine Similarity Matrix (Batch x Batch)
+        sim_mat = torch.matmul(features, features.t())
+
+        # Create masks for Positive and Negative pairs
+        pids = pids.view(-1, 1)
+        # pos_mask: Pairs with same ID (excluding diagonal/self)
+        pos_mask = torch.eq(pids, pids.t()).float()
+        pos_mask = pos_mask - torch.eye(pos_mask.size(0), device=pos_mask.device)
+        
+        # neg_mask: Pairs with different ID
+        neg_mask = 1 - pos_mask - torch.eye(pos_mask.size(0), device=pos_mask.device)
+
+        # Filter similarity scores
+        s_p = sim_mat * pos_mask
+        s_n = sim_mat * neg_mask
+
+        # Calculate Alpha (self-paced weights)
+        # alpha_p = [Op - sp]_+  with Op = 1 + m
+        alpha_p = torch.clamp_min(-s_p.detach() + 1 + self.m, min=0.)
+        # alpha_n = [sn - On]_+  with On = -m
+        alpha_n = torch.clamp_min(s_n.detach() + self.m, min=0.)
+
+        # Margins
+        delta_p = 1 - self.m
+        delta_n = self.m
+
+        # Calculate Logits
+        logit_p = - self.gamma * alpha_p * (s_p - delta_p)
+        logit_n = self.gamma * alpha_n * (s_n - delta_n)
+
+        # LogSumExp trick for numerical stability
+        # We need to mask out the zero entries (from pos_mask/neg_mask) before logsumexp
+        # by adding a large negative number (-1e12) to those positions.
+        
+        logit_p_masked = logit_p + (1 - pos_mask) * -1e12
+        logit_n_masked = logit_n + (1 - neg_mask) * -1e12
+
+        # Loss: softplus(logsumexp(pos) + logsumexp(neg))
+        loss = self.soft_plus(
+            torch.logsumexp(logit_p_masked, dim=1) + 
+            torch.logsumexp(logit_n_masked, dim=1)
+        ).mean()
+
+        return loss
+
+def compute_cir(features, labels, m=0.25, gamma=64):
+    """
+    Wrapper function for Pairwise Circle Loss.
+    """
+    criterion = CircleLoss(m=m, gamma=gamma)
+    loss = criterion(features, labels)
     return loss

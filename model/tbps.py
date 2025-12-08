@@ -6,9 +6,9 @@ from loguru import logger
 
 from model import objectives
 from model.layers import Transformer, QuickGELU, LayerNorm
+from model.objectives import compute_cir
 
-
-TASK_LIST = ["ITC", "SDM", "CMPM", "ID", "MLM", "SS", "MVS", "RITC", "CITC", "NITC"]
+TASK_LIST = ["ITC", "SDM", "CMPM", "ID", "MLM", "SS", "MVS", "RITC", "CITC", "NITC", "CIR"]
 
 
 class TBPS(nn.Module):
@@ -16,7 +16,6 @@ class TBPS(nn.Module):
         super().__init__()
         self.config = config
         self.num_classes = num_classes
-        # self.tokenizer = tokenizer
         self.vocab_size = vocab_size
         self.pad_token_id = pad_token_id
 
@@ -59,6 +58,7 @@ class TBPS(nn.Module):
             self.classifier = nn.Linear(self.embed_dim, self.num_classes)
             nn.init.normal_(self.classifier.weight.data, std=0.001)
             nn.init.constant_(self.classifier.bias.data, val=0.0)
+            logger.info(f"Classifier initialized for ID Loss.")
 
         if config.loss.get("MLM", None):
             self.cross_attn = nn.MultiheadAttention(
@@ -217,7 +217,7 @@ class TBPS(nn.Module):
 
         return sim_targets / sim_targets.sum(
             dim=1, keepdim=True
-        )  # normalize the true matching distribution
+        )
 
     def forward(self, batch, alpha, weights=None):
         """
@@ -267,6 +267,27 @@ class TBPS(nn.Module):
                 * self.config.loss.ss_loss_weight
             )
             ret.update({"ss_loss": ss_loss})
+
+        if self.config.loss.get("CIR", None):
+            circle_m = self.config.loss.get("circle_margin", 0.25)
+            circle_gamma = self.config.loss.get("circle_gamma", 64)
+            
+            img_circle_loss = compute_cir(
+                features=image_pooler_output,
+                labels=batch["pids"],
+                m=circle_m,
+                gamma=circle_gamma
+            )
+            
+            txt_circle_loss = compute_cir(
+                features=caption_pooler_output,
+                labels=batch["pids"],
+                m=circle_m,
+                gamma=circle_gamma
+            )
+            
+            loss = (img_circle_loss + txt_circle_loss) / 2
+            ret.update({"circle_loss": loss * self.config.loss.circle_loss_weight})
 
         # Compute NITC loss
         if self.config.loss.get("NITC", None):
@@ -355,8 +376,6 @@ class TBPS(nn.Module):
 
         # Compute SDM loss
         if self.config.loss.get("SDM", None):
-            # if self.config.backbone.use_sigmoid:
-            #     raise NotImplementedError("SDM loss does not support sigmoid.")
             ret.update(
                 {
                     "sdm_loss": (
@@ -385,7 +404,7 @@ class TBPS(nn.Module):
                     )
                 }
             )
-
+            
         # Compute Ring (Align and Unify) loss
         if self.config.loss.get("Ring", None):
             lam = 0  # A weight factor for align loss

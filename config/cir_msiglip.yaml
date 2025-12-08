@@ -1,0 +1,19 @@
+# config/config.yaml
+defaults:
+  - _self_
+  - dataset: cuhk_pedes
+  - loss: cir_msiglip
+  - aug: siglip
+  - trainer: best_msiglip
+  - optimizer: cir_test
+  - scheduler: tbps_clip
+  - tokenizer: m_siglip
+  - backbone: m_siglip
+  - logger: default
+
+training: true
+dataset_root_dir: .
+distributed: false
+img_size_str: "(256, 256)"
+img_size: ${eval:${img_size_str}}
+seed: 2307
