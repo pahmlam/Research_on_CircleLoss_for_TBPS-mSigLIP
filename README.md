@@ -1,5 +1,7 @@
 # Person-Search using SigLIP
 
+Required at least: NVIDIA RTX 3060 12GB VRAM
+
 ## Setup
 
 0. Clone the repository
