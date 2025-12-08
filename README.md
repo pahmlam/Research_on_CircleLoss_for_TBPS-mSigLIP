@@ -2,9 +2,14 @@
 
 ## Setup
 
-1. Clone the repository
+0. Clone the repository
 ```bash
 git clone https://github.com/pahmlam/Research_on_CircleLoss_for_TBPS-mSigLIP.git
+```
+
+1. Get the datasets
+```bash
+./setup.sh
 ```
 
 2. Install uv package manager and sync the dependencies
@@ -62,4 +67,7 @@ uv run wandb login <API_KEY>
 uv run trainer.py -cn m_siglip img_size_str="'(256,256)'" dataset=cuhk_pedes dataset.sampler=random loss.softlabel_ratio=0.0 trainer.max_epochs=60 optimizer=tbps_clip_no_decay optimizer.param_groups.default.lr=1e-5
 # Run the training with IRRA method
 uv run trainer.py -cn m_siglip img_size_str="'(256,256)'" dataset=cuhk_pedes dataset.sampler=identity dataset.num_instance=1 loss=irra loss.softlabel_ratio=0.0 trainer.max_epochs=60 optimizer=irra_no_decay optimizer.param_groups.default.lr=1e-5
+
+# Run with circle loss
+./run_cir_loss.sh
 ```
