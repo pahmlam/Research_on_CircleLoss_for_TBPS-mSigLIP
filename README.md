@@ -4,7 +4,7 @@
 
 1. Clone the repository
 ```bash
-git clone https://github.com/hungphongtrn/PERSON_RLF.git
+git clone https://github.com/pahmlam/Research_on_CircleLoss_for_TBPS-mSigLIP.git
 ```
 
 2. Install uv package manager and sync the dependencies
