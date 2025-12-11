@@ -254,7 +254,10 @@ class TBPS(nn.Module):
         ret.update({"temperature": self.backbone.logit_scale})
         ret.update({"bias": self.backbone.logit_bias})
 
-        # Improve data efficiency with SimCLR
+        strategy = self.config.loss.get("strategy", "auxiliary")
+
+        # --- A. SimCLR (Self-Supervised) ---
+        # Always runs if enabled, independent of strategy
         if self.config.loss.get("SS", None):
             ss_images1_embed = self.simclr_mlp(self.encode_image(batch["ss_images1"]))
             ss_images2_embed = self.simclr_mlp(self.encode_image(batch["ss_images2"]))
@@ -268,7 +271,9 @@ class TBPS(nn.Module):
             )
             ret.update({"ss_loss": ss_loss})
 
-        if self.config.loss.get("CIR", None):
+        # --- B. Circle Loss (Auxiliary Mode) ---
+        # Only runs in Auxiliary mode. In Intrinsic mode, it's merged into N-ITC.
+        if strategy == "auxiliary" and self.config.loss.get("CIR", None):
             circle_m = self.config.loss.get("circle_margin", 0.25)
             circle_gamma = self.config.loss.get("circle_gamma", 64)
             
@@ -289,8 +294,9 @@ class TBPS(nn.Module):
             loss = (img_circle_loss + txt_circle_loss) / 2
             ret.update({"circle_loss": loss * self.config.loss.circle_loss_weight})
 
-        # Compute NITC loss
-        if self.config.loss.get("NITC", None):
+        # --- C. N-ITC (Standard / Baseline / Auxiliary Mode) ---
+        # Runs for Baseline and Auxiliary strategies
+        if strategy in ["baseline", "auxiliary"] and self.config.loss.get("NITC", None):
             sim_targets = self.prepare_sim_targets(batch["pids"], self.use_sigmoid)
             image_pooler_output_stopped = (
                 image_pooler_output.clone().detach() if alpha != 0 else None
@@ -298,6 +304,7 @@ class TBPS(nn.Module):
             caption_pooler_output_stopped = (
                 caption_pooler_output.clone().detach() if alpha != 0 else None
             )
+            
             nitc_loss = objectives.compute_constrative(
                 image_features=image_pooler_output,
                 text_features=caption_pooler_output,
@@ -310,13 +317,14 @@ class TBPS(nn.Module):
                 use_sigmoid=self.use_sigmoid,
                 weights=weights,
             )
+            
+            # Multi-View Supervision (MVS)
             if self.config.loss.get("MVS", None):
                 aug_images = batch["aug_images"]
                 aug_images_features = self.encode_image(aug_images)
                 aug_images_features_stopped = (
                     aug_images_features.clone().detach() if alpha != 0 else None
                 )
-                # Compute NITC loss with augmented images
                 augmented_nitc_loss = objectives.compute_constrative(
                     image_features=image_pooler_output,
                     text_features=caption_pooler_output,
@@ -333,7 +341,45 @@ class TBPS(nn.Module):
 
             ret.update({"nitc_loss": nitc_loss * self.config.loss.nitc_loss_weight})
 
-        # Compute CITC loss
+        # --- D. Intrinsic N-ITC (Sigmoid-Circle Mode) ---
+        # Replaces standard N-ITC with Intrinsic version
+        if strategy == "intrinsic":
+            circle_m = self.config.loss.get("circle_margin", 0.35)
+            circle_gamma = self.config.loss.get("circle_gamma", 80)
+            
+            # Main Intrinsic Loss
+            intrinsic_loss = objectives.compute_intrinsic_nitc(
+                image_features=image_pooler_output,
+                text_features=caption_pooler_output,
+                logit_scale=logit_scale, 
+                logit_bias=self.backbone.logit_bias,
+                pids=batch["pids"],
+                m=circle_m,
+                gamma=circle_gamma
+            )
+            
+            # MVS for Intrinsic
+            if self.config.loss.get("MVS", None):
+                aug_images = batch["aug_images"]
+                aug_images_features = self.encode_image(aug_images)
+                
+                aug_intrinsic_loss = objectives.compute_intrinsic_nitc(
+                    image_features=aug_images_features,
+                    text_features=caption_pooler_output,
+                    logit_scale=logit_scale,
+                    logit_bias=self.backbone.logit_bias,
+                    pids=batch["pids"],
+                    m=circle_m,
+                    gamma=circle_gamma
+                )
+                intrinsic_loss = (intrinsic_loss + aug_intrinsic_loss) / 2
+            
+            # Map intrinsic loss to 'nitc_loss' key for logger compatibility
+            ret.update({"nitc_loss": intrinsic_loss * self.config.loss.nitc_loss_weight})
+
+        # --- E. Other Losses (CITC, RITC, ITC, SDM, CMPM, ID, MLM) ---
+        
+        # C-ITC:
         if self.config.loss.get("CITC", None):
             loss = objectives.compute_citc(
                 image_features=image_pooler_output,
@@ -345,7 +391,7 @@ class TBPS(nn.Module):
             )
             ret.update({"citc_loss": loss * self.config.loss.citc_loss_weight})
 
-        # Compute RITC loss
+        # RITC
         if self.config.loss.get("RITC", None):
             sim_targets = self.prepare_sim_targets(
                 batch["pids"], use_sigmoid=self.use_sigmoid
@@ -361,7 +407,7 @@ class TBPS(nn.Module):
             )
             ret.update({"ritc_loss": loss * self.config.loss.ritc_loss_weight})
 
-        # Compute ITC loss
+        # ITC (Standard Softmax)
         if self.config.loss.get("ITC", None):
             ret.update(
                 {
@@ -374,7 +420,7 @@ class TBPS(nn.Module):
                 }
             )
 
-        # Compute SDM loss
+        # SDM
         if self.config.loss.get("SDM", None):
             ret.update(
                 {
@@ -392,7 +438,7 @@ class TBPS(nn.Module):
                 }
             )
 
-        # Compute CMPM loss
+        # CMPM
         if self.config.loss.get("CMPM", None):
             ret.update(
                 {
@@ -404,14 +450,8 @@ class TBPS(nn.Module):
                     )
                 }
             )
-            
-        # Compute Ring (Align and Unify) loss
-        if self.config.loss.get("Ring", None):
-            lam = 0  # A weight factor for align loss
-            image_logits = self.classifier(image_pooler_output).float()
-            text_logits = self.classifier(caption_pooler_output).float()
 
-        # Compute ID loss
+        # ID Loss (Only runs if configured - usually OFF in Pairwise Circle Loss strategy)
         if self.config.loss.get("ID", None):
             image_logits = self.classifier(image_pooler_output).float()
             text_logits = self.classifier(caption_pooler_output).float()
@@ -425,16 +465,15 @@ class TBPS(nn.Module):
                     )
                 }
             )
-
+            # Calculate accuracy metrics
             image_pred = torch.argmax(image_logits, dim=1)
             text_pred = torch.argmax(text_logits, dim=1)
-
             image_precision = (image_pred == batch["pids"]).float().mean()
             text_precision = (text_pred == batch["pids"]).float().mean()
             ret.update({"img_acc": image_precision})
             ret.update({"txt_acc": text_precision})
 
-        # Compute MLM loss
+        # MLM Loss
         if self.config.loss.get("MLM", None):
             mlm_input = {
                 "input_ids": batch["mlm_input_ids"],
@@ -445,11 +484,10 @@ class TBPS(nn.Module):
             _, mlm_last_hidden = self.encode_text(mlm_input, return_last_hidden=True)
 
             x = self.cross_former(mlm_last_hidden, image_last_hidden, image_last_hidden)
-
             x = self.mlm_head(x)
 
             scores = x.reshape(-1, self.vocab_size)
-            mlm_labels = mlm_labels.reshape(-1)  # [batch_size * text_len]
+            mlm_labels = mlm_labels.reshape(-1)
             ret.update(
                 {
                     "mlm_loss": objectives.compute_mlm(
@@ -461,7 +499,6 @@ class TBPS(nn.Module):
 
             pred = scores.max(1)[1]
             mlm_label_idx = torch.nonzero(mlm_labels != self.pad_token_id)
-
             acc = (pred[mlm_label_idx] == mlm_labels[mlm_label_idx]).float().mean()
             ret.update({"mlm_acc": acc})
 
