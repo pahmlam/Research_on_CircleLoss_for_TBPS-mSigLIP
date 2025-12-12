@@ -271,7 +271,7 @@ class TBPS(nn.Module):
             )
             ret.update({"ss_loss": ss_loss})
 
-        # --- B. Circle Loss (Auxiliary Mode) ---
+        # --- B.In-modal Circle Loss (Auxiliary ver 1)---
         # Only runs in Auxiliary mode. In Intrinsic mode, it's merged into N-ITC.
         if strategy == "auxiliary" and self.config.loss.get("CIR", None):
             circle_m = self.config.loss.get("circle_margin", 0.25)
@@ -294,7 +294,7 @@ class TBPS(nn.Module):
             loss = (img_circle_loss + txt_circle_loss) / 2
             ret.update({"circle_loss": loss * self.config.loss.circle_loss_weight})
 
-        # --- C. N-ITC (Standard / Baseline / Auxiliary Mode) ---
+        # --- C. No Circle loss ---
         # Runs for Baseline and Auxiliary strategies
         if strategy in ["baseline", "auxiliary"] and self.config.loss.get("NITC", None):
             sim_targets = self.prepare_sim_targets(batch["pids"], self.use_sigmoid)
@@ -342,7 +342,7 @@ class TBPS(nn.Module):
             ret.update({"nitc_loss": nitc_loss * self.config.loss.nitc_loss_weight})
 
         # --- D. Intrinsic N-ITC (Sigmoid-Circle Mode) ---
-        # Replaces standard N-ITC with Intrinsic version
+        # Replaces standard N-ITC with Intrinsic version NC-ITC
         if strategy == "intrinsic":
             circle_m = self.config.loss.get("circle_margin", 0.35)
             circle_gamma = self.config.loss.get("circle_gamma", 80)
@@ -377,7 +377,127 @@ class TBPS(nn.Module):
             # Map intrinsic loss to 'nitc_loss' key for logger compatibility
             ret.update({"nitc_loss": intrinsic_loss * self.config.loss.nitc_loss_weight})
 
-        # --- E. Other Losses (CITC, RITC, ITC, SDM, CMPM, ID, MLM) ---
+        # --- E.  PURE CIRCLE LOSS (REPLACES N-ITC) ---
+        # Replaces completely N-ITC with Cross-Modal Circle Loss
+        if strategy == "circle_only":
+            circle_m = self.config.loss.get("circle_margin", 0.25)
+            circle_gamma = self.config.loss.get("circle_gamma", 64) 
+            
+            #Main Loss: Original Image <-> Text
+            pure_circle_loss = objectives.compute_cross_modal_circle(
+                image_features=image_pooler_output,
+                text_features=caption_pooler_output,
+                pids=batch["pids"],
+                m=circle_m,
+                gamma=circle_gamma
+            )
+
+            final_loss = pure_circle_loss
+
+            if self.config.loss.get("MVS", None):
+                aug_images = batch["aug_images"]
+                aug_images_features = self.encode_image(aug_images)
+                
+                # MVS Loss: Augmented Image <-> Text
+                aug_circle_loss = objectives.compute_cross_modal_circle(
+                    image_features=aug_images_features,
+                    text_features=caption_pooler_output,
+                    pids=batch["pids"],
+                    m=circle_m,
+                    gamma=circle_gamma
+                )
+                
+                final_loss = (pure_circle_loss + aug_circle_loss) / 2
+
+            # Map to 'nitc_loss' key so existing optimizers/loggers work without change
+            ret.update({"nitc_loss": final_loss * self.config.loss.nitc_loss_weight})
+        
+        # --- E2.  N-ITC + CROSS-MODAL CIRCLE AUXILIARY ---
+        # Vẫn chạy N-ITC làm chính, nhưng dùng Circle Loss đa phương thức để ép các mẫu khó
+        if strategy == "auxiliary_cross":
+            # ----------------------------------------------------------------
+            # PHẦN 1: N-ITC (GIỮ NGUYÊN NHƯ BASELINE)
+            # ----------------------------------------------------------------
+            if self.config.loss.get("NITC", None):
+                sim_targets = self.prepare_sim_targets(batch["pids"], self.use_sigmoid)
+                image_pooler_output_stopped = (
+                    image_pooler_output.clone().detach() if alpha != 0 else None
+                )
+                caption_pooler_output_stopped = (
+                    caption_pooler_output.clone().detach() if alpha != 0 else None
+                )
+                
+                nitc_loss = objectives.compute_constrative(
+                    image_features=image_pooler_output,
+                    text_features=caption_pooler_output,
+                    image_features_stopped=image_pooler_output_stopped,
+                    text_features_stopped=caption_pooler_output_stopped,
+                    sim_targets=sim_targets,
+                    alpha=alpha,
+                    logit_scale=logit_scale,
+                    logit_bias=self.backbone.logit_bias,
+                    use_sigmoid=self.use_sigmoid,
+                    weights=weights,
+                )
+                
+                # MVS cho N-ITC
+                if self.config.loss.get("MVS", None):
+                    aug_images = batch["aug_images"]
+                    aug_images_features = self.encode_image(aug_images)
+                    aug_images_features_stopped = (
+                        aug_images_features.clone().detach() if alpha != 0 else None
+                    )
+                    augmented_nitc_loss = objectives.compute_constrative(
+                        image_features=image_pooler_output,
+                        text_features=caption_pooler_output,
+                        image_features_stopped=aug_images_features_stopped,
+                        text_features_stopped=caption_pooler_output_stopped,
+                        sim_targets=sim_targets,
+                        alpha=alpha,
+                        logit_scale=logit_scale,
+                        use_sigmoid=self.use_sigmoid,
+                        logit_bias=self.backbone.logit_bias,
+                        weights=weights,
+                    )
+                    nitc_loss = (nitc_loss + augmented_nitc_loss) / 2
+
+                ret.update({"nitc_loss": nitc_loss * self.config.loss.nitc_loss_weight})
+
+            if self.config.loss.get("CIR", None):
+                circle_m = self.config.loss.get("circle_margin", 0.25)
+                circle_gamma = self.config.loss.get("circle_gamma", 64)
+                
+                # Tính Circle Loss trực tiếp trên cặp Ảnh - Văn bản
+                cm_circle_loss = objectives.compute_cross_modal_circle(
+                    image_features=image_pooler_output,
+                    text_features=caption_pooler_output,
+                    pids=batch["pids"],
+                    m=circle_m,
+                    gamma=circle_gamma
+                )
+                
+                final_circle_loss = cm_circle_loss
+
+                # MVS cho Circle Loss
+                if self.config.loss.get("MVS", None):
+                    # Nếu chưa tính aug features ở trên thì tính lại, nếu có rồi thì dùng lại
+                    if 'aug_images_features' not in locals():
+                        aug_images = batch["aug_images"]
+                        aug_images_features = self.encode_image(aug_images)
+                    
+                    aug_cm_circle_loss = objectives.compute_cross_modal_circle(
+                        image_features=aug_images_features,
+                        text_features=caption_pooler_output,
+                        pids=batch["pids"],
+                        m=circle_m,
+                        gamma=circle_gamma
+                    )
+                    final_circle_loss = (cm_circle_loss + aug_cm_circle_loss) / 2
+
+                # Gán vào key 'circle_loss' để cộng dồn vào tổng loss cuối cùng
+                ret.update({"circle_loss": final_circle_loss * self.config.loss.circle_loss_weight})
+
+        # --- F. Other Losses (CITC, RITC, ITC, SDM, CMPM, ID, MLM) ---
         
         # C-ITC:
         if self.config.loss.get("CITC", None):
@@ -451,7 +571,7 @@ class TBPS(nn.Module):
                 }
             )
 
-        # ID Loss (Only runs if configured - usually OFF in Pairwise Circle Loss strategy)
+        # ID Loss
         if self.config.loss.get("ID", None):
             image_logits = self.classifier(image_pooler_output).float()
             text_logits = self.classifier(caption_pooler_output).float()

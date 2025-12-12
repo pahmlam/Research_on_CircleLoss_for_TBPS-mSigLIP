@@ -427,8 +427,8 @@ def compute_simclr(
 
 class CircleLoss(nn.Module):
     """
-    Circle Loss implementation (Pairwise version).
-    Formula: log(1 + sum_exp(pos) * sum_exp(neg))
+    Circle Loss implementation (Optimized Global Pairwise version).
+    Reference: https://arxiv.org/abs/2002.10857
     """
     def __init__(self, m: float, gamma: float):
         super(CircleLoss, self).__init__()
@@ -437,56 +437,39 @@ class CircleLoss(nn.Module):
         self.soft_plus = nn.Softplus()
 
     def forward(self, features: torch.Tensor, pids: torch.Tensor):
-        """
-        Args:
-            features: (Batch_size, Embed_dim)
-            pids: (Batch_size)
-        """
-        # Normalize features for Cosine Similarity
         features = F.normalize(features, p=2, dim=1)
         
-        # Calculate Cosine Similarity Matrix (Batch x Batch)
+        # Calculate Cosine Similarity Matrix
         sim_mat = torch.matmul(features, features.t())
 
-        # Create masks for Positive and Negative pairs
+        # Masks
         pids = pids.view(-1, 1)
-        # pos_mask: Pairs with same ID (excluding diagonal/self)
+
         pos_mask = torch.eq(pids, pids.t()).float()
-        pos_mask = pos_mask - torch.eye(pos_mask.size(0), device=pos_mask.device)
+        pos_mask.fill_diagonal_(0) 
         
-        # neg_mask: Pairs with different ID
-        neg_mask = 1 - pos_mask - torch.eye(pos_mask.size(0), device=pos_mask.device)
+        neg_mask = 1 - pos_mask
+        neg_mask.fill_diagonal_(0) 
 
-        # Filter similarity scores
-        s_p = sim_mat * pos_mask
-        s_n = sim_mat * neg_mask
+        s_p = sim_mat[pos_mask.bool()]
+        s_n = sim_mat[neg_mask.bool()]
 
-        # Calculate Alpha (self-paced weights)
-        # alpha_p = [Op - sp]_+  with Op = 1 + m
+        if s_p.numel() == 0 or s_n.numel() == 0:
+            return torch.tensor(0.0, device=features.device, requires_grad=True)
+
         alpha_p = torch.clamp_min(-s_p.detach() + 1 + self.m, min=0.)
-        # alpha_n = [sn - On]_+  with On = -m
         alpha_n = torch.clamp_min(s_n.detach() + self.m, min=0.)
 
-        # Margins
         delta_p = 1 - self.m
         delta_n = self.m
 
-        # Calculate Logits
         logit_p = - self.gamma * alpha_p * (s_p - delta_p)
         logit_n = self.gamma * alpha_n * (s_n - delta_n)
 
-        # LogSumExp trick for numerical stability
-        # We need to mask out the zero entries (from pos_mask/neg_mask) before logsumexp
-        # by adding a large negative number (-1e12) to those positions.
-        
-        logit_p_masked = logit_p + (1 - pos_mask) * -1e12
-        logit_n_masked = logit_n + (1 - neg_mask) * -1e12
-
-        # Loss: softplus(logsumexp(pos) + logsumexp(neg))
         loss = self.soft_plus(
-            torch.logsumexp(logit_p_masked, dim=1) + 
-            torch.logsumexp(logit_n_masked, dim=1)
-        ).mean()
+            torch.logsumexp(logit_p, dim=0) + 
+            torch.logsumexp(logit_n, dim=0)
+        )
 
         return loss
 
@@ -501,7 +484,7 @@ def compute_cir(features, labels, m=0.25, gamma=64):
 def compute_intrinsic_nitc(
     image_features,
     text_features,
-    logit_scale,
+    logit_scale, 
     logit_bias,
     pids,
     m=0.35,
@@ -509,65 +492,76 @@ def compute_intrinsic_nitc(
 ):
     """
     N-ITC with Intrinsic Circle Loss integration (Sigmoid-Circle).
-    Logits are re-weighted by alpha before passing to Sigmoid.
+    Explicitly optimizes both I2T and T2I directions.
     """
-    # 1. Normalize features
     image_features = F.normalize(image_features, dim=1, p=2)
     text_features = F.normalize(text_features, dim=1, p=2)
 
-    # 2. Calculate Cosine Similarity (Raw Logits before scale)
-    # Shape: (Batch, Batch)
     sim_i2t = image_features @ text_features.t()
-    sim_t2i = sim_i2t.t()
+    sim_t2i = sim_i2t.t() 
 
-    # 3. Create Masks
-    # pids shape: (Batch)
-    batch_size = pids.size(0)
     pids = pids.view(-1, 1)
     
-    # pos_mask: 1 where ID matches, 0 otherwise
     pos_mask = torch.eq(pids, pids.t()).float()
     neg_mask = 1 - pos_mask
 
-    # 4. Calculate Alpha (Self-paced weights) and Modified Logits
-    # Formula: alpha * (s - delta)
-    # Positive pairs: alpha_p = [1 + m - s]_+ 
-    # Negative pairs: alpha_n = [s - (-m)]_+ = [s + m]_+
-    
     def apply_circle_dynamics(sim_matrix):
-        # Detach sim for alpha calculation to avoid backprop loop on weights
         sim_detached = sim_matrix.detach()
         
         alpha_p = torch.clamp_min(-sim_detached + 1 + m, min=0.)
-        alpha_n = torch.clamp_min(sim_detached + m, min=0.)
         
-        # Apply weighting
-        # Positive: - gamma * alpha_p * (s - (1-m))
-        # Negative: gamma * alpha_n * (s - m)
-        # Note: In N-ITC Sigmoid, positive label is 1, negative is -1.
-        # We need to adjust logits so that:
-        # - Sigmoid(logit_pos) -> 1
-        # - Sigmoid(logit_neg) -> 0
+        alpha_n = torch.clamp_min(sim_detached + m, min=0.)
         
         delta_p = 1 - m
         delta_n = m
         
-        # Modified logits
-        # Khi s_p thấp, alpha_p lớn -> logit_p thấp -> Loss cao -> Kéo về 1
         logit_p = gamma * alpha_p * (sim_matrix - delta_p)
         logit_n = gamma * alpha_n * (sim_matrix - delta_n)
-        
+
         return logit_p * pos_mask + logit_n * neg_mask
 
-    # 5. Apply modifications
     mod_logits_i2t = apply_circle_dynamics(sim_i2t)
     mod_logits_t2i = apply_circle_dynamics(sim_t2i)
 
-    # 6. Compute Sigmoid Loss
-    # N-ITC uses bias and learns temperature, but here we used Gamma as fixed temperature.
-    # We ignore logit_scale/bias passed in args to stick to Circle Loss physics.
-    
     loss_i2t = F.binary_cross_entropy_with_logits(mod_logits_i2t, pos_mask)
     loss_t2i = F.binary_cross_entropy_with_logits(mod_logits_t2i, pos_mask)
     
     return (loss_i2t + loss_t2i) / 2
+
+
+def compute_cross_modal_circle(image_features, text_features, pids, m=0.25, gamma=128):
+    """
+     Circle Loss between 2 modalities
+    """
+    image_features = F.normalize(image_features, dim=1, p=2)
+    text_features = F.normalize(text_features, dim=1, p=2)
+
+    sim_mat = torch.matmul(image_features, text_features.t())
+
+    pids = pids.view(-1, 1)
+
+    pos_mask = torch.eq(pids, pids.t()).float()
+    neg_mask = 1 - pos_mask
+
+    s_p = sim_mat[pos_mask.bool()]
+    s_n = sim_mat[neg_mask.bool()]
+
+    if s_p.numel() == 0 or s_n.numel() == 0:
+        return torch.tensor(0.0, device=image_features.device, requires_grad=True)
+
+    alpha_p = torch.clamp_min(-s_p.detach() + 1 + m, min=0.)
+    alpha_n = torch.clamp_min(s_n.detach() + m, min=0.)
+
+    delta_p = 1 - m
+    delta_n = m
+
+    logit_p = - gamma * alpha_p * (s_p - delta_p)
+    logit_n = gamma * alpha_n * (s_n - delta_n)
+
+    soft_plus = torch.nn.Softplus()
+    loss = soft_plus(
+        torch.logsumexp(logit_p, dim=0) + 
+        torch.logsumexp(logit_n, dim=0)
+    )
+
+    return loss

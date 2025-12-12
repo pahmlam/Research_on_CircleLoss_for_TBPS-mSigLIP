@@ -1,24 +1,30 @@
+# ========================================================
+# Options: "baseline", "auxiliary", "intrinsic", "circle_only"
+# ========================================================
+strategy: "auxiliary" 
+
 NITC: true
 nitc_loss_weight: 1.0
-softlabel_ratio: 0
+softlabel_ratio: 0.0
 
-MVS: true
+MVS: true   
 
-CIR: true
-circle_loss_weight: 0.1
-circle_margin: 0.25      
-circle_gamma: 64        
+CIR: true   
+circle_loss_weight: 0.1  
 
-CITC: true
+circle_margin: 0.25    
+circle_gamma: 128    
+
+CITC: true  
 citc_inmodal_weight: 0.25
 citc_intermodal_weight: 0.25
-citc_loss_weight: 0.1  
+citc_loss_weight: 0.1    
 
-SS: true
+SS: true    
 simclr_temperature: 0.1
-ss_loss_weight: 0.8
+ss_loss_weight: 0.4
 
-ID: false
+ID: false   
 id_loss_weight: 0.0
 
 SDM: false
