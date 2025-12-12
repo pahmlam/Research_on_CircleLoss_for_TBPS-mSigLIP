@@ -275,7 +275,7 @@ class TBPS(nn.Module):
         # Only runs in Auxiliary mode. In Intrinsic mode, it's merged into N-ITC.
         if strategy == "auxiliary" and self.config.loss.get("CIR", None):
             circle_m = self.config.loss.get("circle_margin", 0.25)
-            circle_gamma = self.config.loss.get("circle_gamma", 64)
+            circle_gamma = self.config.loss.get("circle_gamma", 128)
             
             img_circle_loss = compute_cir(
                 features=image_pooler_output,
@@ -381,7 +381,7 @@ class TBPS(nn.Module):
         # Replaces completely N-ITC with Cross-Modal Circle Loss
         if strategy == "circle_only":
             circle_m = self.config.loss.get("circle_margin", 0.25)
-            circle_gamma = self.config.loss.get("circle_gamma", 64) 
+            circle_gamma = self.config.loss.get("circle_gamma", 128) 
             
             #Main Loss: Original Image <-> Text
             pure_circle_loss = objectives.compute_cross_modal_circle(
