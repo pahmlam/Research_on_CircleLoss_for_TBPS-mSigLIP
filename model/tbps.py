@@ -275,7 +275,7 @@ class TBPS(nn.Module):
         # Only runs in Auxiliary mode. In Intrinsic mode, it's merged into N-ITC.
         if strategy == "auxiliary" and self.config.loss.get("CIR", None):
             circle_m = self.config.loss.get("circle_margin", 0.25)
-            circle_gamma = self.config.loss.get("circle_gamma", 128)
+            circle_gamma = self.config.loss.get("circle_gamma", 64)
             
             img_circle_loss = compute_cir(
                 features=image_pooler_output,
@@ -381,7 +381,7 @@ class TBPS(nn.Module):
         # Replaces completely N-ITC with Cross-Modal Circle Loss
         if strategy == "circle_only":
             circle_m = self.config.loss.get("circle_margin", 0.25)
-            circle_gamma = self.config.loss.get("circle_gamma", 128) 
+            circle_gamma = self.config.loss.get("circle_gamma", 128)
             
             #Main Loss: Original Image <-> Text
             pure_circle_loss = objectives.compute_cross_modal_circle(
@@ -415,9 +415,6 @@ class TBPS(nn.Module):
         # --- E2.  N-ITC + CROSS-MODAL CIRCLE AUXILIARY ---
         # Vẫn chạy N-ITC làm chính, nhưng dùng Circle Loss đa phương thức để ép các mẫu khó
         if strategy == "auxiliary_cross":
-            # ----------------------------------------------------------------
-            # PHẦN 1: N-ITC (GIỮ NGUYÊN NHƯ BASELINE)
-            # ----------------------------------------------------------------
             if self.config.loss.get("NITC", None):
                 sim_targets = self.prepare_sim_targets(batch["pids"], self.use_sigmoid)
                 image_pooler_output_stopped = (
@@ -480,7 +477,6 @@ class TBPS(nn.Module):
 
                 # MVS cho Circle Loss
                 if self.config.loss.get("MVS", None):
-                    # Nếu chưa tính aug features ở trên thì tính lại, nếu có rồi thì dùng lại
                     if 'aug_images_features' not in locals():
                         aug_images = batch["aug_images"]
                         aug_images_features = self.encode_image(aug_images)
