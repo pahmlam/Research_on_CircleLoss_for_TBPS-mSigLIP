@@ -67,7 +67,7 @@ The project is implemented in PyTorch and structured as follows:
 
 Additional techniques include LoRA-based fine-tuning, self-supervision, and multi-view supervision.
 
-**Hardware:** Intel Core i5-7600K, NVIDIA RTX 3060 (12GB), 24GB RAM.
+**Hardware:** Intel Core i5-7600K, NVIDIA RTX 3060 12GB .
 
 ---
 
