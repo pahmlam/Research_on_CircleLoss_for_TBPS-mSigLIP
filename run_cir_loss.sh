@@ -4,7 +4,7 @@ echo "========================================================"
 echo "CHỌN CHIẾN LƯỢC HUẤN LUYỆN (TRAINING STRATEGY)"
 echo "========================================================"
 echo "1. Baseline (N-ITC Gốc - Không Circle Loss)"
-echo "2. Auxiliary (N-ITC + Circle Loss Bổ trợ)"
+echo "2. In-modal Auxiliary"
 echo "3. Intrinsic (N-ITC biến thể Sigmoid-Circle)"
 echo "4. Pure Circle (Thay thế hoàn toàn N-ITC bằng Circle Loss)"
 echo "5. Auxiliary Cross-modal (N-ITC + Circle Loss Ảnh-Text)"
@@ -12,7 +12,7 @@ echo "========================================================"
 read -p "Nhập lựa chọn (1-5): " choice
 
 COMMON_ARGS="
-img_size_str='(256,256)'
+img_size_str='(384,128)'
 dataset=vn3k_vi
 dataset.sampler=identity
 dataset.num_instance=4
@@ -28,6 +28,7 @@ optimizer.param_groups.default.lr=1e-4
 
 backbone.freeze.vision=false
 backbone.freeze.text=false
++backbone.gradient_checkpointing=true
 
 loss.softlabel_ratio=0.0
 
