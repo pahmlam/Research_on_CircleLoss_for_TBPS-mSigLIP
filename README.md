@@ -55,6 +55,7 @@ Dự án đề xuất thử nghiệm 4 chiến lược tích hợp Circle Loss k
 Với chiến lược số 4 (Hybrid), mô hình đã đạt được sự cải thiện so với baseline trên tập dữ liệu tiếng Việt:
 
 Test Results:
+
 `+------+-------+-------+-------+-------+-------+`
 `| Task |   R1  |   R5  |  R10  |  mAP  |  mINP |`
 `+------+-------+-------+-------+-------+-------+`
