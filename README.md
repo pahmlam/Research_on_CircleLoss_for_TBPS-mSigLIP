@@ -75,7 +75,7 @@ Additional techniques include LoRA-based fine-tuning, self-supervision, and mult
 
 ### 5.1 Datasets
 
-Experiments are conducted on the VN3K Vietnamese TBPS dataset, with additional evaluation on CUHK-PEDES for generalization analysis.
+Experiments are conducted on the 3000VNPersonSearch dataset, with additional evaluation on CUHK-PEDES for generalization analysis.
 
 ### 5.2 Evaluation Metrics
 
